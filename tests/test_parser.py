@@ -19,6 +19,7 @@ class MockWindData:
 from wind_mcp.core.parser import (
     parse_wss, parse_wsd, parse_wsi, parse_wst, parse_wsq,
     parse_wset, parse_edb, WindAPIError,
+    parse_tdays, parse_tdaysoffset, parse_tdayscount,
 )
 
 
@@ -132,3 +133,36 @@ def test_parse_edb():
     assert len(parsed) == 3
     assert parsed[0]["date"] == "2025-01-01"
     assert parsed[0]["M5567877"] == 2.1
+
+# --- tdays-family parsers (WindPy returns nested .Data rows) ---
+
+def test_parse_tdays_nested_data():
+    """WindPy tdays returns .Data as [[d1, d2, ...]] — must be flattened."""
+    result = MockWindData(
+        error_code=0,
+        data=[[datetime(2025, 1, 1), datetime(2025, 1, 2), datetime(2025, 1, 3)]],
+    )
+    parsed = parse_tdays(result)
+    assert parsed == ["2025-01-01", "2025-01-02", "2025-01-03"]
+
+
+def test_parse_tdays_flat_data_still_works():
+    """Flat .Data (hypothetical shape) keeps working after flattening."""
+    result = MockWindData(
+        error_code=0,
+        data=[datetime(2025, 1, 1), datetime(2025, 1, 2)],
+    )
+    parsed = parse_tdays(result)
+    assert parsed == ["2025-01-01", "2025-01-02"]
+
+
+def test_parse_tdaysoffset_nested_data():
+    """WindPy tdaysoffset returns .Data as [[d]] — must be un-nested."""
+    result = MockWindData(error_code=0, data=[[datetime(2025, 1, 15)]])
+    assert parse_tdaysoffset(result) == "2025-01-15"
+
+
+def test_parse_tdayscount_nested_data():
+    """WindPy tdayscount returns .Data as [[n]] — must be un-nested."""
+    result = MockWindData(error_code=0, data=[[5]])
+    assert parse_tdayscount(result) == 5

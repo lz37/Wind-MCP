@@ -186,24 +186,40 @@ def parse_wsee(result) -> list[dict]:
     return parse_wss(result)
 
 
+def _flatten_date_cells(cells):
+    """Flatten WindPy tdays-family .Data one level.
+
+    WindPy returns .Data as a list of rows, each row itself a list of cells
+    (e.g. [[d1, d2, ...]] for tdays, [[d]] for tdaysoffset/tdayscount), while
+    other APIs return a flat list of cells per field. Flattening one level
+    makes every element a single value so callers can iterate/index safely.
+    """
+    out = []
+    for item in cells:
+        if isinstance(item, (list, tuple)):
+            out.extend(item)
+        else:
+            out.append(item)
+    return out
+
+
 def parse_tdays(result) -> list[str]:
     """
     Parse tdays result.
     Returns: list of date strings.
     """
     _check_error(result)
-    return [t.strftime("%Y-%m-%d") for t in result.Data]
+    return [t.strftime("%Y-%m-%d") for t in _flatten_date_cells(result.Data)]
 
 
 def parse_tdaysoffset(result) -> str:
     """Parse tdaysoffset result. Returns single date string."""
     _check_error(result)
-    d = result.Data[0] if isinstance(result.Data, list) else result.Data
+    d = _flatten_date_cells(result.Data)[0]
     return d.strftime("%Y-%m-%d")
 
 
 def parse_tdayscount(result) -> int:
     """Parse tdayscount result. Returns integer count."""
     _check_error(result)
-    d = result.Data[0] if isinstance(result.Data, list) else result.Data
-    return int(d)
+    return int(_flatten_date_cells(result.Data)[0])
