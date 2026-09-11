@@ -79,6 +79,7 @@ mcp = FastMCP(
     "wind-mcp",
     instructions="Wind Financial Terminal MCP Server",
     lifespan=wind_lifespan,
+    host="0.0.0.0",
 )
 
 
