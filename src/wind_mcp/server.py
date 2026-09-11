@@ -4,6 +4,7 @@ Wind MCP Server — entry point.
 Exposes 23 tools + 1 resource via FastMCP for AI assistant access to Wind Financial Terminal.
 """
 
+import atexit
 import json
 import logging
 import time
@@ -43,23 +44,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
-async def wind_lifespan(server):
-    """Manage Wind session lifecycle: startup warmup + shutdown cleanup."""
-    logger.info("Wind MCP starting up...")
-    try:
-        from .core.session import WindSession
-        WindSession.get()  # Warm up connection
-        logger.info("Wind session warmed up.")
-    except Exception as e:
-        logger.error(f"Wind session warmup failed: {e}")
-    yield
-    # Shutdown
-    logger.info("Wind MCP shutting down...")
+def _process_cleanup() -> None:
+    """Release process-global Wind resources at interpreter exit.
+
+    FastMCP runs the server lifespan once per streamable-http session (not
+    once per process), so session teardown must never release these shared
+    resources — otherwise one client disconnecting breaks every other
+    connected session (executor: "cannot schedule new futures after
+    shutdown"; WindPy: shared connection stopped). Cleanup is registered
+    with atexit and runs only when the process itself exits.
+    """
     try:
         from .core.cache import get_cache
-        cache = get_cache()
-        logger.info(f"Cache stats at shutdown: {cache.stats()}")
+        logger.info(f"Cache stats at shutdown: {get_cache().stats()}")
     except Exception:
         pass
     try:
@@ -73,6 +70,27 @@ async def wind_lifespan(server):
     except Exception:
         pass
     logger.info("Wind MCP shutdown complete.")
+
+
+atexit.register(_process_cleanup)
+
+
+@asynccontextmanager
+async def wind_lifespan(server):
+    """Warm up the shared Wind session when a client session starts.
+
+    NOTE: FastMCP runs this lifespan once per streamable-http session.
+    Teardown of process-global resources (Wind executor, WindPy connection)
+    must NOT happen here; it is handled at process exit via _process_cleanup.
+    """
+    logger.info("Wind MCP session starting up...")
+    try:
+        from .core.session import WindSession
+        WindSession.get()  # Warm up connection
+        logger.info("Wind session warmed up.")
+    except Exception as e:
+        logger.error(f"Wind session warmup failed: {e}")
+    yield
 
 
 mcp = FastMCP(
