@@ -1,24 +1,20 @@
 """Tests for resilience layer — timeout, retry, stale fallback."""
 
-import sys
 import os
+import sys
 import time
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from wind_mcp.core.cache import WindCache, CacheEntry
-from wind_mcp.core.parser import WindAPIError
-
+from wind_mcp.core.cache import CacheEntry, WindCache
 
 # --- Stale cache fallback ---
+
 
 def test_stale_get_returns_expired_data():
     cache = WindCache()
     key = cache._make_key("func", "arg1")
-    cache._store[key] = CacheEntry(
-        data={"result": 42}, timestamp=time.time() - 10000, ttl=1
-    )
+    cache._store[key] = CacheEntry(data={"result": 42}, timestamp=time.time() - 10000, ttl=1)
     # Stale get should return data even though expired (called before get which deletes)
     stale = cache.stale_get("func", "arg1")
     assert stale == {"result": 42}
@@ -34,6 +30,7 @@ def test_stale_get_returns_none_if_absent():
 
 
 # --- Cache LRU eviction ---
+
 
 def test_cache_eviction_on_maxsize():
     cache = WindCache(maxsize=10)
@@ -64,6 +61,7 @@ def test_cache_eviction_preserves_recent():
 
 # --- Cache stats ---
 
+
 def test_cache_stats_include_evictions():
     cache = WindCache(maxsize=5)
     for i in range(10):
@@ -72,12 +70,3 @@ def test_cache_stats_include_evictions():
     assert "evictions" in stats
     assert stats["evictions"] > 0
     assert stats["maxsize"] == 5
-
-
-# --- Transient error codes ---
-
-def test_transient_errors_defined():
-    from wind_mcp.core.resilience import TRANSIENT_ERRORS
-    assert -40520001 in TRANSIENT_ERRORS  # Connection timeout
-    assert -40520003 in TRANSIENT_ERRORS  # Network error
-    assert len(TRANSIENT_ERRORS) >= 8

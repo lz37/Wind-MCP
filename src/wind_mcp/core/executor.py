@@ -13,10 +13,17 @@ import hashlib
 import json
 import logging
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import ParamSpec, TypeVar
+
+from .resilience import wind_call_with_resilience
 
 logger = logging.getLogger(__name__)
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
 
 # Single-thread executor — guarantees WindPy calls are serialized.
 #
@@ -44,7 +51,9 @@ def _get_executor() -> ThreadPoolExecutor:
         return _executor
 
 
-def _make_dedup_key(func: Callable, args: tuple, kwargs: dict) -> str:
+def _make_dedup_key(
+    func: Callable[..., object], args: tuple[object, ...], kwargs: dict[str, object]
+) -> str:
     """Build a dedup key from function name + arguments."""
     raw = json.dumps(
         {"func": getattr(func, "__name__", str(func)), "args": args, "kwargs": kwargs},
@@ -54,7 +63,7 @@ def _make_dedup_key(func: Callable, args: tuple, kwargs: dict) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-async def run_wind(func: Callable, *args: Any, **kwargs: Any) -> Any:
+async def run_wind(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
     """
     Submit a synchronous Wind API call to the single-thread executor.
 
@@ -75,10 +84,11 @@ async def run_wind(func: Callable, *args: Any, **kwargs: Any) -> Any:
 
         loop = asyncio.get_running_loop()
 
-        async def _execute():
+        async def _execute() -> R:
             try:
                 result = await loop.run_in_executor(
-                    _get_executor(), lambda: func(*args, **kwargs)
+                    _get_executor(),
+                    lambda: wind_call_with_resilience(func, *args, **kwargs),
                 )
                 return result
             finally:
@@ -91,12 +101,12 @@ async def run_wind(func: Callable, *args: Any, **kwargs: Any) -> Any:
     return await task
 
 
-def run_wind_sync(func: Callable, *args: Any, **kwargs: Any) -> Any:
+def run_wind_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
     """
     Synchronous version for use in non-async contexts (e.g., tests).
     Still serializes through the single-thread executor.
     """
-    future = _get_executor().submit(func, *args, **kwargs)
+    future = _get_executor().submit(wind_call_with_resilience, func, *args, **kwargs)
     return future.result()
 
 

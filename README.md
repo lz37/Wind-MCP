@@ -355,6 +355,22 @@ Built-in cache reduces Wind API load with data-type-aware TTLs:
 
 All TTLs are configurable via `wind_mcp.toml` or environment variables. See [Configuration](#configuration).
 
+## Wind Connection Recovery
+
+A Wind query returning `-40521010` (`CWSDService:: Internet Timeout`) invalidates
+the SDK session even if `w.isconnected()` still reports `True`. On the same
+serialized Wind worker, the server performs one `w.stop()` / `w.start()` attempt
+and retries the query once. Other API errors are not retried.
+
+If reconnection fails or the retry still fails, the original Wind error is
+reported; stale cached data is not substituted. A failed transport retry leaves
+`wind://health` disconnected and forces a real reconnect before subsequent queries.
+Health reports SDK connection state, not a successful historical-data probe.
+
+The executor waits for WindPy to return. The `[api]` timeout, retry and backoff
+settings below do not currently control that wait or this fixed recovery limit;
+an MCP request cancellation does not interrupt an in-progress native SDK call.
+
 ## Configuration
 
 Server behavior can be customized via `wind_mcp.toml` in the project root. All values can also be overridden via environment variables with the prefix `WIND_MCP_` (e.g., `WIND_MCP_CACHE_MAXSIZE=5000`).
@@ -375,9 +391,9 @@ ttl_macro = 86400          # EDB — 24 hours
 ttl_portfolio = 300        # WPF/WPS/WPD — 5 min
 
 [api]
-timeout = 30.0              # Per-call timeout (seconds)
-retries = 2                 # Retry count on transient errors
-backoff = 1.0               # Backoff multiplier
+timeout = 30.0              # Not applied by the current Wind executor
+retries = 2                 # Recovery currently permits one query retry
+backoff = 1.0               # Not applied to transport-error recovery
 
 [log]
 format = "text"             # "json" or "text"
@@ -405,7 +421,7 @@ wind-mcp/
 │   │   ├── converter.py           # Bloomberg → Wind ticker converter
 │   │   ├── executor.py            # Single-thread executor for Wind API calls
 │   │   ├── validators.py          # Input validation (codes, dates, fields)
-│   │   ├── resilience.py          # Timeout, retry, stale-cache fallback
+│   │   ├── resilience.py          # Bounded SDK reconnect and query retry
 │   │   ├── config.py              # Centralized config (env > toml > defaults)
 │   │   ├── metrics.py             # Counters + histograms for observability
 │   │   ├── universe.py            # Universe resolution (index/sector → security list)
