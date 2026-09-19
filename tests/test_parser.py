@@ -166,3 +166,57 @@ def test_parse_tdayscount_nested_data():
     """WindPy tdayscount returns .Data as [[n]] — must be un-nested."""
     result = MockWindData(error_code=0, data=[[5]])
     assert parse_tdayscount(result) == 5
+
+
+def test_parse_wsd_multi_multi_field_major():
+    result = MockWindData(
+        error_code=0,
+        data=[
+            [[100.0, 101.0], [200.0, 201.0], [None, None]],  # close: [code][time]
+            [[1000, 1100], [2000, 2100], [None, None]],  # volume: [code][time]
+        ],
+        fields=["close", "volume"],
+        codes=["600030.SH", "000001.SZ", "399006.SZ"],
+        times=[datetime(2025, 1, 1), datetime(2025, 1, 2)],
+    )
+    parsed = parse_wsd(result)
+    assert isinstance(parsed, dict)
+    assert parsed["date"] == ["2025-01-01", "2025-01-02"]
+    assert parsed["codes"] == ["600030.SH", "000001.SZ", "399006.SZ"]
+    assert parsed["series"]["600030.SH"]["close"] == [100.0, 101.0]
+    assert parsed["series"]["000001.SZ"]["volume"] == [2000, 2100]
+    # 399006.SZ all-null: parser keeps nulls verbatim; the client drops empty codes
+    assert parsed["series"]["399006.SZ"]["close"] == [None, None]
+
+
+def test_parse_wsd_multi_multi_code_major():
+    result = MockWindData(
+        error_code=0,
+        data=[
+            [[100.0, 101.0], [1000, 1100]],  # 600030.SH: [field][time]
+            [[200.0, 201.0], [2000, 2100]],  # 000001.SZ: [field][time]
+            [[300.0, 301.0], [3000, 3100]],  # 399006.SZ: [field][time]
+        ],
+        fields=["close", "volume"],
+        codes=["600030.SH", "000001.SZ", "399006.SZ"],
+        times=[datetime(2025, 1, 1), datetime(2025, 1, 2)],
+    )
+    parsed = parse_wsd(result)
+    assert isinstance(parsed, dict)
+    assert parsed["series"]["600030.SH"]["volume"] == [1000, 1100]
+    assert parsed["series"]["000001.SZ"]["close"] == [200.0, 201.0]
+
+
+def test_parse_wsd_multi_multi_ambiguous_rejected():
+    result = MockWindData(
+        error_code=0,
+        data=[[[1.0], [2.0]], [[3.0], [4.0]]],
+        fields=["close", "volume"],
+        codes=["600030.SH", "000001.SZ"],
+        times=[datetime(2025, 1, 1)],
+    )
+    try:
+        parse_wsd(result)
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "无法判定" in str(e)

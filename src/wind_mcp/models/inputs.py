@@ -32,7 +32,7 @@ class HistoricalInput(BaseModel):
 
     codes: str | list[str] = Field(
         ...,
-        description="Security codes. Supports multi-code single-field OR single-code multi-field.",
+        description="Security codes. Multi-code + multi-field supported (columnar JSON payload; use response_format='json').",
     )
     fields: str | list[str] = Field(
         ..., description="Field names or FieldSet shortcuts."

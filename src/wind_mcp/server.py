@@ -139,7 +139,7 @@ def wind_get_historical(params: HistoricalInput) -> str:
     """Daily time series data (WSD) — price, volume, fundamentals over a date range.
 
 USE WHEN: You need historical daily data over time — price trends, rolling fundamentals, performance comparison.
-CONSTRAINT: Multi-code queries only support a single field; single-code queries support multiple fields.
+NOTE: Multi-code multi-field queries are supported and return a compact columnar payload {"date", "codes", "fields", "series"}; always use response_format='json' for them.
 DATE MACROS: '-1M', '-3M', '-1Y', '-5TD', 'LYR' (last year-end), 'MRQ' (most recent quarter), 'ED-10d' (10 days before today).
 EXAMPLES:
   codes='600030.SH', fields='close,volume,pct_chg', begin_date='-3M'
