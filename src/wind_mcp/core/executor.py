@@ -12,10 +12,11 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 from .resilience import wind_call_with_resilience
 
@@ -37,9 +38,42 @@ _executor_lock = threading.Lock()
 _executor_running = False
 
 # In-flight dedup: cache_key -> asyncio.Task
-_inflight: dict[str, asyncio.Task] = {}
+_inflight: dict[str, asyncio.Task[Any]] = {}
 _inflight_lock = threading.Lock()
 
+
+class WindCallTimeoutError(TimeoutError):
+    """A Wind SDK call exceeded the per-call timeout and was abandoned."""
+
+
+_DEFAULT_CALL_TIMEOUT = 600.0
+
+
+def _call_timeout() -> float:
+    raw = os.environ.get("WIND_MCP_CALL_TIMEOUT", "")
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_CALL_TIMEOUT
+    return value if value > 0 else _DEFAULT_CALL_TIMEOUT
+
+
+def _recycle_executor() -> None:
+    """Replace the shared executor without waiting on a wedged worker thread.
+
+    Python cannot kill a thread stuck inside a Wind SDK (COM) call.  The only
+    way to keep the service responsive is to abandon the old executor — its
+    single worker stays wedged as a leaked thread — and let the next request
+    run on a fresh one.
+    """
+    global _executor, _executor_running
+    with _executor_lock:
+        old = _executor
+        _executor = None
+        _executor_running = False
+    if old is not None:
+        old.shutdown(wait=False)
+        logger.warning("Abandoned wedged Wind executor; next call starts a fresh one")
 
 def _get_executor() -> ThreadPoolExecutor:
     """Return the shared single-thread executor, recreating it after shutdown."""
@@ -70,6 +104,9 @@ async def run_wind(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R
     Features:
     - Serialized execution (single thread, no concurrent WindPy calls)
     - In-flight dedup (same query reuses the running Future)
+    - Per-call timeout (WIND_MCP_CALL_TIMEOUT, default 600s): on timeout the
+      wedged executor is abandoned and the session invalidated, so one stuck
+      COM call cannot starve every later request forever.
 
     Usage:
         result = await run_wind(session.w.wss, codes, fields, options)
@@ -80,7 +117,7 @@ async def run_wind(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R
         if key in _inflight:
             task = _inflight[key]
             logger.debug(f"Dedup hit: reusing in-flight request {key[:8]}")
-            return await task
+            return await _await_with_timeout(key, task)
 
         loop = asyncio.get_running_loop()
 
@@ -98,7 +135,32 @@ async def run_wind(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R
         task = asyncio.ensure_future(_execute())
         _inflight[key] = task
 
-    return await task
+    return await _await_with_timeout(key, task)
+
+
+async def _await_with_timeout(key: str, task: asyncio.Task[Any]) -> Any:
+    """Await an in-flight Wind task with a bounded timeout.
+
+    The underlying task is shielded: a caller timing out must not cancel the
+    executor work (the stuck thread cannot be cancelled anyway).  On timeout
+    the task is evicted from the dedup map so the next identical request is
+    resubmitted to a fresh executor instead of waiting on the wedged one.
+    """
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), _call_timeout())
+    except TimeoutError:
+        with _inflight_lock:
+            _inflight.pop(key, None)
+        _recycle_executor()
+        # Invalidate the session so the next call rebuilds the Wind connection
+        # on the fresh executor instead of reusing a possibly poisoned one.
+        from .session import WindSession
+
+        WindSession.invalidate()
+        raise WindCallTimeoutError(
+            f"Wind call timed out after {_call_timeout()}s; executor recycled, "
+            "session invalidated"
+        ) from None
 
 
 def run_wind_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:

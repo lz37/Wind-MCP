@@ -234,3 +234,29 @@ def test_queued_queries_share_serialized_recovery(wind_sdk):
     assert wind_sdk.queries == 3
     assert wind_sdk.restarts == 1
     assert len(wind_sdk.sdk_threads) == 1
+
+
+def test_wedged_call_times_out_and_executor_is_recycled(wind_sdk, monkeypatch):
+    """A Wind SDK call that never returns must not starve every later call.
+
+    Regression: run_wind used to bare-await the executor task, so one stuck
+    COM call wedged the single-thread executor and the whole server stopped
+    answering while the process stayed alive.
+    """
+    monkeypatch.setenv("WIND_MCP_CALL_TIMEOUT", "0.2")
+    release = threading.Event()
+
+    def wedged():
+        release.wait(30)
+        return "unreachable"
+
+    async def run():
+        try:
+            with pytest.raises(executor.WindCallTimeoutError):
+                await executor.run_wind(wedged)
+            return await executor.run_wind(lambda: "recovered")
+        finally:
+            release.set()
+
+    assert asyncio.run(run()) == "recovered"
+    assert wind_sdk.restarts >= 1
