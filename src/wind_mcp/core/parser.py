@@ -66,74 +66,36 @@ def parse_wss(result) -> list[dict]:
     return rows
 
 
-def parse_wsd(result) -> list[dict] | dict:
+def parse_wsd(result) -> list[dict]:
     """
     Parse WSD (daily time series) result.
 
     For single-security multi-field: rows keyed by date.
     For multi-security single-field: rows keyed by date with code columns.
-    For multi-security multi-field: columnar payload {"date": [...], "codes": [...],
-    "fields": [...], "series": {code: {field: [values...]}}} — compact for bulk
-    ingestion; use response_format=json.
 
-    Returns: list of dicts, one per date (legacy modes), or columnar dict (multi-multi).
+    Returns: list of dicts, one per date.
     """
     _check_error(result)
+    rows = []
     times = result.Times
     fields = result.Fields
     codes = result.Codes
 
     if len(codes) == 1:
         # Single security, possibly multiple fields
-        rows = []
         for i, t in enumerate(times):
             row = {"date": t.strftime("%Y-%m-%d")}
             for j, field in enumerate(fields):
                 row[field.lower()] = _safe_value(result.Data[j][i])
             rows.append(row)
-        return rows
-
-    if len(fields) == 1:
-        # Multiple securities, single field
-        rows = []
+    else:
+        # Multiple securities, single field (WSD constraint)
         for i, t in enumerate(times):
             row = {"date": t.strftime("%Y-%m-%d")}
             for j, code in enumerate(codes):
                 row[code] = _safe_value(result.Data[j][i])
             rows.append(row)
-        return rows
-
-    # Multiple securities AND multiple fields. WindPy nests Data either
-    # field-major ([field][code][time]) or code-major ([code][field][time]).
-    # Only the outer length is trustworthy: when n_f == n_c the shape cannot
-    # disambiguate at all, so refuse rather than guess wrong.
-    n_f, n_c, n_t = len(fields), len(codes), len(times)
-    data = result.Data
-    if n_f != n_c and len(data) == n_f:
-        field_major = True
-    elif n_f != n_c and len(data) == n_c:
-        field_major = False
-    else:
-        raise ValueError(
-            f"WSD multi-multi 返回维度无法判定: fields={n_f} codes={n_c} "
-            f"times={n_t} data_outer={len(data)}"
-        )
-    for block in data:
-        if len(block) != (n_c if field_major else n_f):
-            raise ValueError("WSD multi-multi 返回内层维度与判定不一致")
-
-    dates = [t.strftime("%Y-%m-%d") for t in times]
-    series: dict[str, dict[str, list]] = {code: {} for code in codes}
-    for fi, field in enumerate(fields):
-        for ci, code in enumerate(codes):
-            values = data[fi][ci] if field_major else data[ci][fi]
-            series[code][field.lower()] = [_safe_value(v) for v in values]
-    return {
-        "date": dates,
-        "codes": list(codes),
-        "fields": [f.lower() for f in fields],
-        "series": series,
-    }
+    return rows
 
 
 def parse_wsi(result) -> list[dict]:
