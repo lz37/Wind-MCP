@@ -260,3 +260,31 @@ def test_wedged_call_times_out_and_executor_is_recycled(wind_sdk, monkeypatch):
 
     assert asyncio.run(run()) == "recovered"
     assert wind_sdk.restarts >= 1
+
+
+def test_client_disconnect_abandons_query(wind_sdk, monkeypatch):
+    """Cancelling the caller (client disconnect) must disown the query:
+    the executor is recycled, the session invalidated, and no later dedup
+    hit joins the orphaned call."""
+    monkeypatch.setenv("WIND_MCP_CALL_TIMEOUT", "30")
+    release = threading.Event()
+
+    def wedged():
+        release.wait(5)
+        return "late"
+
+    async def run():
+        pending = asyncio.ensure_future(executor.run_wind(wedged))
+        await asyncio.sleep(0.1)  # let the call reach the executor thread
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        # The next query runs immediately on a recycled executor with a
+        # rebuilt session — it does not wait for the orphaned call.
+        return await executor.run_wind(lambda: "fresh")
+
+    try:
+        assert asyncio.run(asyncio.wait_for(run(), 5)) == "fresh"
+    finally:
+        release.set()
+    assert wind_sdk.restarts >= 1

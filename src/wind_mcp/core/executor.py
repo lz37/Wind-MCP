@@ -149,18 +149,29 @@ async def _await_with_timeout(key: str, task: asyncio.Task[Any]) -> Any:
     try:
         return await asyncio.wait_for(asyncio.shield(task), _call_timeout())
     except TimeoutError:
-        with _inflight_lock:
-            _inflight.pop(key, None)
-        _recycle_executor()
-        # Invalidate the session so the next call rebuilds the Wind connection
-        # on the fresh executor instead of reusing a possibly poisoned one.
-        from .session import WindSession
-
-        WindSession.invalidate()
+        _abandon_query(key)
         raise WindCallTimeoutError(
             f"Wind call timed out after {_call_timeout()}s; executor recycled, "
             "session invalidated"
         ) from None
+    except asyncio.CancelledError:
+        # Client disconnected: abandon this query.  The orphaned SDK thread
+        # cannot be killed, but its result is disowned, the session it ran on
+        # is invalidated, and no later dedup hit may join it.
+        _abandon_query(key)
+        raise
+
+
+def _abandon_query(key: str) -> None:
+    """Disown an in-flight query: evict dedup, recycle executor, kill session."""
+    with _inflight_lock:
+        _inflight.pop(key, None)
+    _recycle_executor()
+    # Invalidate the session so the next call rebuilds the Wind connection
+    # on the fresh executor instead of reusing a possibly poisoned one.
+    from .session import WindSession
+
+    WindSession.invalidate()
 
 
 def run_wind_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
