@@ -89,6 +89,97 @@ def test_parse_wsd_multi_security():
     assert parsed[0]["000001.SZ"] == 200.0
 
 
+def test_parse_wsd_multi_security_single_day_folded():
+    """One time point makes Wind fold the payload to [field][code].
+
+    Regression: Data[[v1, v2]] must not be read as Data[code][time], which
+    indexed past the end and raised IndexError.
+    """
+    result = MockWindData(
+        error_code=0,
+        data=[[3811.9043, 4.389, 108.59]],
+        fields=["close"],
+        codes=["000001.SH", "510300.SH", "511030.SH"],
+        times=[datetime(2026, 10, 8)],
+    )
+    parsed = parse_wsd(result)
+    assert len(parsed) == 1
+    assert parsed[0]["date"] == "2026-10-08"
+    assert parsed[0]["000001.SH"] == 3811.9043
+    assert parsed[0]["510300.SH"] == 4.389
+    assert parsed[0]["511030.SH"] == 108.59
+
+
+def test_parse_wsd_single_security_single_day_scalar_cell():
+    """One code routes to the single-security branch; a lone scalar cell works."""
+    result = MockWindData(
+        error_code=0,
+        data=[[100.0]],
+        fields=["close"],
+        codes=["600030.SH"],
+        times=[datetime(2025, 1, 1)],
+    )
+    parsed = parse_wsd(result)
+    assert parsed == [{"date": "2025-01-01", "close": 100.0}]
+
+
+def test_parse_wsd_multi_security_multi_day_unaffected():
+    """Multi-day multi-code keeps the [code][time] layout."""
+    result = MockWindData(
+        error_code=0,
+        data=[[1.0, 2.0], [3.0, 4.0]],
+        fields=["close"],
+        codes=["A.SH", "B.SH"],
+        times=[datetime(2025, 1, 1), datetime(2025, 1, 2)],
+    )
+    parsed = parse_wsd(result)
+    assert len(parsed) == 2
+    assert parsed[0] == {"date": "2025-01-01", "A.SH": 1.0, "B.SH": 3.0}
+    assert parsed[1] == {"date": "2025-01-02", "A.SH": 2.0, "B.SH": 4.0}
+
+
+def test_parse_wsd_multi_field_multi_day_field_major():
+    """Multi-code multi-field keeps the columnar contract."""
+    result = MockWindData(
+        error_code=0,
+        data=[
+            [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],  # close per code over 2 days
+            [[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]],  # volume
+        ],
+        fields=["close", "volume"],
+        codes=["A.SH", "B.SH", "C.SH"],
+        times=[datetime(2025, 1, 1), datetime(2025, 1, 2)],
+    )
+    parsed = parse_wsd(result)
+    assert parsed["date"] == ["2025-01-01", "2025-01-02"]
+    assert parsed["series"]["A.SH"]["close"] == [1.0, 2.0]
+    assert parsed["series"]["C.SH"]["close"] == [5.0, 6.0]
+    assert parsed["series"]["B.SH"]["volume"] == [30.0, 40.0]
+
+
+def test_parse_wsd_multi_field_single_day_scalar_cells():
+    """The multi-multi branch must tolerate scalar leaf cells on one day.
+
+    Wind collapses the innermost axis when only one time point comes back, so
+    each leaf is a bare number instead of a one-element list.
+    """
+    result = MockWindData(
+        error_code=0,
+        data=[
+            [100.0, 200.0, 300.0],  # close per code, one time point
+            [10.0, 20.0, 30.0],  # volume per code
+        ],
+        fields=["close", "volume"],
+        codes=["A.SH", "B.SH", "C.SH"],
+        times=[datetime(2025, 1, 1)],
+    )
+    parsed = parse_wsd(result)
+    assert parsed["date"] == ["2025-01-01"]
+    assert parsed["series"]["A.SH"]["close"] == [100.0]
+    assert parsed["series"]["C.SH"]["close"] == [300.0]
+    assert parsed["series"]["B.SH"]["volume"] == [20.0]
+
+
 def test_parse_wsi():
     result = MockWindData(
         error_code=0,
